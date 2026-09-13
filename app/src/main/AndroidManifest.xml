@@ -3,6 +3,12 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- NetworkUtils -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- ExternalStorageUtils saving to public folders on API 24-28 only; MediaStore needs no permission on 29+. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
 
     <application
         android:name=".CodebaseApp"
@@ -28,6 +34,17 @@
             android:name=".presentation.postdetail.PostDetailActivity"
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
+
+        <!-- IntentUtils.shareFile: only the "shared/" folders in res/xml/file_paths.xml are exposed. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 
 </manifest>

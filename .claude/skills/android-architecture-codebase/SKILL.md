@@ -22,8 +22,8 @@ If this skill and the code disagree, the code wins; fix the skill afterwards.
 
 1. **Data policy.** Default is online-first (network first, Room only as fallback on failure). If the user wants something else (offline-first, cache-only, stale-while-revalidate), that is a repository-contract change: it ripples through parameters in every layer, the tests, and the "Online-first repository flow" section of `CLAUDE.md`.
 2. **Schema change?** If the task adds or alters a Room table, a migration decision is needed before coding (see "Room schema changes" below). Ask the user; don't pick silently.
-3. **New screen = new Activity.** The project deliberately has no Navigation Component, no Fragments, no Compose. Don't introduce them unless the user asks.
-4. **UI consumption style.** ViewModels always expose both `uiState: StateFlow` and `uiStateLiveData`. New screens collect the StateFlow with `repeatOnLifecycle(STARTED)` unless the user asks for LiveData. Keep the two existing screens as they are — `PostListActivity` (StateFlow) and `PostDetailActivity` (LiveData) intentionally demonstrate both styles.
+3. **New screen = new Activity.** Fragments are allowed only for bottom sheets (`BaseBottomSheet`) and child views inside a screen (`BaseFragment`). Dialogs are static-content `AppCompatDialog`s (`BaseDialog`), not Fragments. The project deliberately has no Navigation Component and no Compose. Don't introduce them unless the user asks. Every UI class extends its base class from `base/` (see `CLAUDE.md` "Base classes").
+4. **UI consumption style.** ViewModels always expose both `uiState: StateFlow` and `uiStateLiveData`. New screens collect the StateFlow with `collectWhenStarted` (from the base class) unless the user asks for LiveData. Keep the two existing screens as they are — `PostListActivity` (StateFlow) and `PostDetailActivity` (LiveData) intentionally demonstrate both styles.
 
 ## Layer map
 
@@ -43,9 +43,14 @@ Package root: `app/src/main/java/com/example/codebase/`. Dependency direction: `
 | Repository impl | `data/repository/` | `XxxRepositoryImpl @Inject constructor` | `PostRepositoryImpl.kt` |
 | DI | `di/NetworkModule`, `DatabaseModule`, `RepositoryModule` | add providers/bindings to the existing modules | — |
 | UI state | `presentation/<feature>/` | `XxxUiState` data class, all fields defaulted | `PostListUiState.kt` |
-| ViewModel | `presentation/<feature>/` | `XxxViewModel`, `@HiltViewModel` | `PostListViewModel.kt` |
-| Activity | `presentation/<feature>/` | `XxxActivity`, `@AndroidEntryPoint` | `PostListActivity.kt` |
-| Layout | `res/layout/` | `activity_<feature>.xml`, `item_<thing>.xml`; ids in camelCase | `activity_post_list.xml` |
+| Base classes | `base/` | `BaseActivity`, `BaseFragment`, `BaseDialog`, `BaseBottomSheet`, `BaseListAdapter`, `BaseAdapter` (drag & drop), `BaseViewHolder`, `BaseDiffCallback`, `BaseViewModel`; extend, don't duplicate | — |
+| Utils | `utils/` | `XxxUtils` objects (`FileUtils`, `PrefsUtils`, `PermissionUtils`, `NetworkUtils`, …); reuse before writing a helper; pure logic as `internal` functions with JVM tests; never used from `domain` | `CLAUDE.md` "Utils" |
+| ViewModel | `presentation/<feature>/` | `XxxViewModel : BaseViewModel<XxxUiState>`, `@HiltViewModel` | `PostListViewModel.kt` |
+| Activity | `presentation/<feature>/` | `XxxActivity : BaseActivity<ActivityXxxBinding>`, `@AndroidEntryPoint` | `PostListActivity.kt` |
+| Fragment / Bottom sheet | `presentation/<feature>/` | `XxxFragment`, `XxxBottomSheet` extending the matching base, `@AndroidEntryPoint` if it injects or uses `viewModels()` | `references/templates.md` |
+| Dialog | `presentation/<feature>/` | `XxxDialog : BaseDialog<DialogXxxBinding>`; data and callbacks via constructor, no Hilt, no ViewModel | `references/templates.md` |
+| Adapter | `presentation/<feature>/` | `XxxAdapter : BaseListAdapter<Xxx, ItemXxxBinding>`; `BaseAdapter` only for drag & drop | `PostAdapter.kt` |
+| Layout | `res/layout/` | `activity_<feature>.xml`, `fragment_<name>.xml`, `dialog_<name>.xml`, `bottom_sheet_<name>.xml`, `item_<thing>.xml`; ids in camelCase | `activity_post_list.xml` |
 | Unit tests | `app/src/test/java/com/example/codebase/` mirroring the main package | `XxxTest` | `PostRepositoryImplTest.kt` |
 
 `<feature>` is a lowercase package name without separators (`postlist`, `postdetail`).
@@ -103,7 +108,9 @@ Build inner layers first so the project compiles after every step.
 | New entity | `AppDatabase` entities list, database version or migration, `DatabaseModule` DAO provider |
 | New repository | `RepositoryModule` `@Binds` |
 | New Activity | `AndroidManifest.xml`, `strings.xml` |
-| New network permission or host config | `AndroidManifest.xml` (`INTERNET` is already declared) |
+| New network permission or host config | `AndroidManifest.xml` (`INTERNET` and `ACCESS_NETWORK_STATE` are already declared) |
+| Feature needs a runtime permission | Declare it in `AndroidManifest.xml` and request it with `PermissionUtils.request`; if it only exists on some API levels, add it to `PERMISSION_SDK_RANGES` in `PermissionUtils.kt` |
+| File shared with other apps | Write it under `InternalStorageUtils.sharedDir` or `CacheUtils.sharedCacheDir`; any other location needs a `res/xml/file_paths.xml` entry |
 | Build workaround flag | `gradle.properties`, with a comment citing the issue |
 | Policy or convention change | `CLAUDE.md` and this skill |
 
@@ -142,6 +149,17 @@ Each of these has already happened in this repo.
 - Changing an entity without bumping the `AppDatabase` version crashes existing installs ("Room cannot verify the data integrity").
 - Bumping the version without a `Migration` crashes too ("A migration from 1 to 2 was required but not found"). No fallback is configured today.
 - The cache is disposable under online-first, so `fallbackToDestructiveMigration(dropAllTables = true)` on the builder is a reasonable option. It is still a policy choice: ask the user, and record the choice in `CLAUDE.md`.
+
+**Base classes and Fragments**
+- Overriding `onCreate` / `onCreateView` for setup, or calling `enableEdgeToEdge` / setting an inset listener again in a subclass. Use the `initView` / `initListeners` / `observeData` hooks and override `applyWindowInsets` if needed.
+- Keeping a Fragment binding in a plain `lateinit var` (it leaks the view after `onDestroyView`). The Fragment-based bases already null it.
+- Collecting in a Fragment with `lifecycleScope` instead of `viewLifecycleOwner`. Use the base class's `collectWhenStarted`.
+- Giving a `BaseDialog` layout no background. The window background is transparent.
+- Putting a ViewModel, Flow collection or loading state in a `BaseDialog`. It has no lifecycle and isn't restored after rotation; load data in the screen and pass the result into the dialog's constructor.
+- Setting click listeners in an adapter's `bind` or capturing `position` in them. Set them in `onViewHolderCreated` and use `getItemOrNull(holder)`.
+- Using `BaseListAdapter` for a draggable list, or calling `submitList` from `ItemTouchHelper.onMove`. The async diff lags behind the drag and moves the wrong rows; extend `BaseAdapter` and use `moveItem`.
+- Using `BaseAdapter` for a list that is never dragged. Default to `BaseListAdapter`.
+- Not reporting the new order to the ViewModel after a drag. The next `uiState` emission snaps the list back.
 
 **Android wiring**
 - Forgetting to register a new Activity in the manifest. It compiles, then throws `ActivityNotFoundException` at runtime.

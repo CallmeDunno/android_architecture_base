@@ -9,7 +9,7 @@ Copy-ready skeletons mirroring the Posts feature. Replace `Xxx` / `xxx` / `<feat
 3. Local — entity, DAO, database registration, DAO provider
 4. Mappers
 5. Repository impl (online-first) + binding
-6. Presentation — UiState, ViewModel, Activity (StateFlow), Activity (LiveData + extra), layout root, manifest
+6. Presentation — UiState, ViewModel, Activity (StateFlow), Activity (LiveData + extra), Adapter, Fragment, Dialog, Bottom sheet, layout root, manifest
 7. Tests — repository, ViewModel
 
 ---
@@ -200,11 +200,7 @@ data class XxxListUiState(
 @HiltViewModel
 class XxxListViewModel @Inject constructor(
     private val getXxxsUseCase: GetXxxsUseCase
-) : ViewModel() {
-
-    private val _uiState = MutableStateFlow(XxxListUiState())
-    val uiState: StateFlow<XxxListUiState> = _uiState.asStateFlow()
-    val uiStateLiveData: LiveData<XxxListUiState> = uiState.asLiveData()
+) : BaseViewModel<XxxListUiState>(XxxListUiState()) {   // provides uiState + uiStateLiveData
 
     private var loadJob: Job? = null
 
@@ -216,14 +212,14 @@ class XxxListViewModel @Inject constructor(
         // The repository flow never completes, so the previous collection must be cancelled.
         loadJob?.cancel()
         loadJob = getXxxsUseCase().onEach { resource ->
-            _uiState.update { current ->
+            setState {
                 when (resource) {
-                    is Resource.Loading -> current.copy(isLoading = true)
-                    is Resource.Success -> current.copy(isLoading = false, items = resource.data, error = null)
-                    is Resource.Error -> current.copy(
+                    is Resource.Loading -> copy(isLoading = true)
+                    is Resource.Success -> copy(isLoading = false, items = resource.data, error = null)
+                    is Resource.Error -> copy(
                         isLoading = false,
                         error = resource.message,
-                        items = resource.data ?: current.items
+                        items = resource.data ?: items
                     )
                 }
             }
@@ -235,38 +231,35 @@ class XxxListViewModel @Inject constructor(
 ```kotlin
 // presentation/<feature>/XxxListActivity.kt — default style: collect StateFlow
 @AndroidEntryPoint
-class XxxListActivity : AppCompatActivity() {
+class XxxListActivity : BaseActivity<ActivityXxxListBinding>(ActivityXxxListBinding::inflate) {
+    // BaseActivity already did: enableEdgeToEdge, inflate + setContentView, system bar insets on binding.root
 
-    private lateinit var binding: ActivityXxxListBinding
     private val viewModel: XxxListViewModel by viewModels()
+    private val adapter = XxxAdapter(onItemClick = ::openDetail)
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
-        binding = ActivityXxxListBinding.inflate(layoutInflater)
-        setContentView(binding.root)
+    override fun initView(savedInstanceState: Bundle?) {
+        binding.recyclerXxxs.layoutManager = LinearLayoutManager(this)
+        binding.recyclerXxxs.adapter = adapter
+    }
 
-        ViewCompat.setOnApplyWindowInsetsListener(binding.main) { v, insets ->
-            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
-            insets
-        }
+    override fun initListeners() {
+        binding.swipeRefresh.setOnRefreshListener { viewModel.load() }
+    }
 
-        lifecycleScope.launch {
-            repeatOnLifecycle(Lifecycle.State.STARTED) {
-                viewModel.uiState.collect { render(it) }
-            }
-        }
+    override fun observeData() {
+        viewModel.uiState.collectWhenStarted(::render)
     }
 
     private fun render(state: XxxListUiState) { /* bind views; text from R.string */ }
+
+    private fun openDetail(item: Xxx) { /* see caller below */ }
 }
 ```
 
 ```kotlin
 // presentation/<feature>/XxxDetailActivity.kt — ID extra + LiveData variant
 @AndroidEntryPoint
-class XxxDetailActivity : AppCompatActivity() {
+class XxxDetailActivity : BaseActivity<ActivityXxxDetailBinding>(ActivityXxxDetailBinding::inflate) {
 
     companion object {
         const val EXTRA_XXX_ID = "extra_xxx_id"
@@ -274,11 +267,7 @@ class XxxDetailActivity : AppCompatActivity() {
 
     private val viewModel: XxxDetailViewModel by viewModels()
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        // ... binding + insets as above ...
-        viewModel.uiStateLiveData.observe(this) { render(it) }
-
+    override fun initView(savedInstanceState: Bundle?) {
         // Skip on rotation (ViewModel survived), reload after process death (fresh ViewModel).
         val alreadyLoadedOrLoading = viewModel.uiState.value.let { it.item != null || it.isLoading }
         if (!alreadyLoadedOrLoading) {
@@ -287,10 +276,188 @@ class XxxDetailActivity : AppCompatActivity() {
             viewModel.load(id)
         }
     }
+
+    override fun observeData() {
+        viewModel.uiStateLiveData.observe(this, ::render)
+    }
+
+    private fun render(state: XxxDetailUiState) { /* ... */ }
 }
 
 // Caller:
 startActivity(Intent(this, XxxDetailActivity::class.java).putExtra(XxxDetailActivity.EXTRA_XXX_ID, item.id))
+```
+
+```kotlin
+// presentation/<feature>/XxxAdapter.kt — single view type, item + child click, drag handle.
+// BaseAdapter because the list is draggable; without drag & drop extend BaseListAdapter (identical hooks)
+// and drop onStartDrag / the touch listener.
+class XxxAdapter(
+    private val onItemClick: (Xxx) -> Unit,
+    private val onFavoriteClick: (Xxx) -> Unit,
+    private val onStartDrag: (RecyclerView.ViewHolder) -> Unit
+) : BaseAdapter<Xxx, ItemXxxBinding>(BaseDiffCallback { it.id }) {   // Xxx must be a data class
+
+    override fun createBinding(inflater: LayoutInflater, parent: ViewGroup, viewType: Int): ItemXxxBinding =
+        ItemXxxBinding.inflate(inflater, parent, false)
+
+    // Listeners are created once per ViewHolder; the item is resolved at click time.
+    @SuppressLint("ClickableViewAccessibility") // the handle only starts a drag, it has no click action
+    override fun onViewHolderCreated(holder: BaseViewHolder<ItemXxxBinding>, viewType: Int) {
+        holder.binding.root.setOnClickListener { getItemOrNull(holder)?.let(onItemClick) }
+        holder.binding.buttonFavorite.setOnClickListener { getItemOrNull(holder)?.let(onFavoriteClick) }
+        holder.binding.imageDragHandle.setOnTouchListener { _, event ->
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) onStartDrag(holder)
+            false
+        }
+    }
+
+    override fun bind(binding: ItemXxxBinding, item: Xxx, position: Int) {
+        binding.textName.text = item.name
+    }
+}
+```
+
+```kotlin
+// presentation/<feature>/XxxRowAdapter.kt — several view types: VB = ViewBinding (no drag → BaseListAdapter)
+sealed interface XxxRow {
+    data class Header(val title: String) : XxxRow
+    data class Item(val xxx: Xxx) : XxxRow
+}
+
+class XxxRowAdapter(
+    private val onItemClick: (Xxx) -> Unit
+) : BaseListAdapter<XxxRow, ViewBinding>(
+    BaseDiffCallback { row ->                                   // ids must be unique across row types
+        when (row) {
+            is XxxRow.Header -> "header_${row.title}"
+            is XxxRow.Item -> "item_${row.xxx.id}"
+        }
+    }
+) {
+    private companion object {
+        const val TYPE_HEADER = 0
+        const val TYPE_ITEM = 1
+    }
+
+    override fun getItemViewType(position: Int): Int = when (getItem(position)) {
+        is XxxRow.Header -> TYPE_HEADER
+        is XxxRow.Item -> TYPE_ITEM
+    }
+
+    override fun createBinding(inflater: LayoutInflater, parent: ViewGroup, viewType: Int): ViewBinding = when (viewType) {
+        TYPE_HEADER -> ItemXxxHeaderBinding.inflate(inflater, parent, false)
+        else -> ItemXxxBinding.inflate(inflater, parent, false)
+    }
+
+    override fun onViewHolderCreated(holder: BaseViewHolder<ViewBinding>, viewType: Int) {
+        if (viewType == TYPE_ITEM) {
+            holder.binding.root.setOnClickListener {
+                (getItemOrNull(holder) as? XxxRow.Item)?.let { onItemClick(it.xxx) }
+            }
+        }
+    }
+
+    override fun bind(binding: ViewBinding, item: XxxRow, position: Int) {
+        when {
+            binding is ItemXxxHeaderBinding && item is XxxRow.Header -> binding.textTitle.text = item.title
+            binding is ItemXxxBinding && item is XxxRow.Item -> binding.textName.text = item.xxx.name
+        }
+    }
+}
+```
+
+```kotlin
+// presentation/<feature>/XxxDragCallback.kt — ItemTouchHelper wiring
+class XxxDragCallback(
+    private val adapter: BaseAdapter<Xxx, *>,
+    private val onDragFinished: (List<Xxx>) -> Unit
+) : ItemTouchHelper.SimpleCallback(ItemTouchHelper.UP or ItemTouchHelper.DOWN, 0) {
+
+    private var moved = false
+
+    override fun isLongPressDragEnabled(): Boolean = false   // true to drag by long press instead of a handle
+
+    override fun onMove(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder): Boolean =
+        adapter.moveItem(viewHolder.bindingAdapterPosition, target.bindingAdapterPosition).also { moved = moved || it }
+
+    override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) = Unit
+
+    override fun clearView(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder) {
+        super.clearView(recyclerView, viewHolder)
+        if (moved) onDragFinished(adapter.currentList)          // persist the order in the ViewModel
+        moved = false
+    }
+}
+
+// Activity:
+// private val itemTouchHelper by lazy { ItemTouchHelper(XxxDragCallback(adapter, viewModel::onReordered)) }
+// private val adapter = XxxAdapter(::openDetail, viewModel::toggleFavorite, onStartDrag = { itemTouchHelper.startDrag(it) })
+// initView: itemTouchHelper.attachToRecyclerView(binding.recyclerXxxs)
+```
+// Custom rules (e.g. ignore a timestamp, partial rebind): subclass BaseDiffCallback and override
+// areContentsTheSame / getChangePayload instead of writing a new DiffUtil.ItemCallback from scratch.
+```
+
+```kotlin
+// presentation/<feature>/XxxFragment.kt — child view hosted inside an Activity
+@AndroidEntryPoint   // needed for Hilt injection / hiltViewModel-backed viewModels(); the host Activity must be @AndroidEntryPoint too
+class XxxFragment : BaseFragment<FragmentXxxBinding>(FragmentXxxBinding::inflate) {
+
+    private val viewModel: XxxViewModel by viewModels()          // or activityViewModels() to share with the host
+
+    override fun initView(savedInstanceState: Bundle?) { /* binding is valid from here until onDestroyView */ }
+
+    override fun observeData() {
+        viewModel.uiState.collectWhenStarted(::render)            // runs on viewLifecycleOwner
+    }
+
+    private fun render(state: XxxUiState) { /* ... */ }
+}
+```
+
+```kotlin
+// presentation/<feature>/XxxDialog.kt — static content; layout root must set its own background (window is transparent)
+class XxxDialog(
+    context: Context,
+    private val title: String,
+    private val message: String,
+    private val onConfirm: () -> Unit
+) : BaseDialog<DialogXxxBinding>(context, DialogXxxBinding::inflate) {
+
+    override val isCancelableByUser = false
+
+    override fun initView() {
+        binding.textTitle.text = title
+        binding.textMessage.text = message
+    }
+
+    override fun initListeners() {
+        binding.buttonCancel.setOnClickListener { dismiss() }
+        binding.buttonConfirm.setOnClickListener {
+            onConfirm()
+            dismiss()
+        }
+    }
+}
+
+// Caller (Activity; pass the Activity as context so the dialog dismisses itself when it is destroyed):
+// XxxDialog(this, getString(R.string.xxx_title), getString(R.string.xxx_message), onConfirm = viewModel::delete).show()
+// From a Fragment: XxxDialog(requireActivity(), ...).show()
+```
+
+```kotlin
+// presentation/<feature>/XxxBottomSheet.kt
+class XxxBottomSheet : BaseBottomSheet<BottomSheetXxxBinding>(BottomSheetXxxBinding::inflate) {
+
+    companion object {
+        const val TAG = "XxxBottomSheet"
+    }
+
+    override fun initView(savedInstanceState: Bundle?) { /* ... */ }
+}
+
+// Caller: XxxBottomSheet().show(supportFragmentManager, XxxBottomSheet.TAG)
 ```
 
 ```xml

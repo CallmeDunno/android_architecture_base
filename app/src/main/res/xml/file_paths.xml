@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Directories shareable through FileProvider (IntentUtils.shareFile). Only the dedicated "shared/"
+     folders are listed, so the rest of filesDir and cacheDir can never be exposed by a content Uri.
+     InternalStorageUtils.sharedDir and CacheUtils.sharedCacheDir return these folders. -->
+<paths>
+    <files-path
+        name="shared_files"
+        path="shared/" />
+    <cache-path
+        name="shared_cache"
+        path="shared/" />
+</paths>
