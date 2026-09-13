@@ -19,6 +19,14 @@ java -jar gradle\wrapper\gradle-wrapper.jar lintDebug --console=plain
 
 Lint findings are only in the report (`app/build/reports/lint-results-debug.sarif` / `.html`), not the console. Test results: `app/build/test-results/testDebugUnitTest/*.xml`. No emulator/AVD is configured on this machine, so UI behavior can't be verified by running the app here — say so rather than claiming it works.
 
+## Git commits and pushes
+
+Commits and pushes are made in the owner's name only (GitHub account `CallmeDunno`):
+
+- Author/committer come from the existing git config (`CallmeDunno <dungworkit@gmail.com>`). Check `git config user.name` / `user.email` before committing; don't override them.
+- Do **not** add a `Co-Authored-By: Claude …` trailer (or any other AI attribution) to commit messages or PR descriptions — GitHub renders it as a co-author. This overrides default attribution guidance.
+- `origin` is `git@github.com-personal:CallmeDunno/android_architecture_base.git` (the `github.com-personal` SSH alias authenticates as `CallmeDunno`).
+
 ## Build configuration gotchas (AGP 9.3)
 
 - AGP 9 has **built-in Kotlin**. Do not apply `org.jetbrains.kotlin.android` (build fails) and do not use `android.kotlinOptions {}`. Kotlin `jvmTarget` defaults to `compileOptions.targetCompatibility` (11). The "Kotlin does not yet support 25 JDK target" warning is benign — bytecode is verified to be Java 11.
